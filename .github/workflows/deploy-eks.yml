@@ -2,14 +2,17 @@ name: CI/CD Tienda Perritos EKS
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  id-token: write
+
 env:
-  # Repos de ECR (no son secretos, solo nombres)
-  ECR_REPO_FRONTEND: tienda-frontend
-  ECR_REPO_BACKEND: tienda-backend
-  ECR_REPO_DB: tienda-db
+  ECR_REPO_FRONTEND: tienda-perritos-frontend
+  ECR_REPO_BACKEND: tienda-perritos-backend
+  VERSION_TAG: v1.0.0
 
 jobs:
   build-and-deploy:
@@ -22,10 +25,8 @@ jobs:
       - name: Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
 
       - name: Login a Amazon ECR
         id: login-ecr
@@ -34,34 +35,24 @@ jobs:
       - name: Definir tag de imagen
         run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
-      # ---------- FRONTEND ----------
-      - name: Build & push FRONTEND
+      - name: Construir y publicar FRONTEND
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          cd frontend
-          docker build -t $ECR_REGISTRY/${ECR_REPO_FRONTEND}:${IMAGE_TAG} .
+          docker build -t $ECR_REGISTRY/${ECR_REPO_FRONTEND}:${IMAGE_TAG} -t $ECR_REGISTRY/${ECR_REPO_FRONTEND}:latest -t $ECR_REGISTRY/${ECR_REPO_FRONTEND}:${VERSION_TAG} ./frontend
           docker push $ECR_REGISTRY/${ECR_REPO_FRONTEND}:${IMAGE_TAG}
+          docker push $ECR_REGISTRY/${ECR_REPO_FRONTEND}:latest
+          docker push $ECR_REGISTRY/${ECR_REPO_FRONTEND}:${VERSION_TAG}
 
-      # ---------- BACKEND ----------
-      - name: Build & push BACKEND
+      - name: Construir y publicar BACKEND
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          cd backend
-          docker build -t $ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG} .
+          docker build -t $ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG} -t $ECR_REGISTRY/${ECR_REPO_BACKEND}:latest -t $ECR_REGISTRY/${ECR_REPO_BACKEND}:${VERSION_TAG} ./backend
           docker push $ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG}
+          docker push $ECR_REGISTRY/${ECR_REPO_BACKEND}:latest
+          docker push $ECR_REGISTRY/${ECR_REPO_BACKEND}:${VERSION_TAG}
 
-      # ---------- DB (opcional) ----------
-      - name: Build & push DB
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        run: |
-          cd db
-          docker build -t $ECR_REGISTRY/${ECR_REPO_DB}:${IMAGE_TAG} .
-          docker push $ECR_REGISTRY/${ECR_REPO_DB}:${IMAGE_TAG}
-
-      # ---------- Instalar kubectl ----------
       - name: Instalar kubectl
         uses: azure/setup-kubectl@v4
         with:
@@ -78,51 +69,70 @@ jobs:
             --name $EKS_CLUSTER_NAME
           kubectl config current-context
 
-      # ---------- Aplicar manifests base ----------
-      - name: Aplicar manifests base (namespace, DB, servicios)
+      - name: Aplicar namespace
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Preparar configuración de Kubernetes
         env:
           EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
+          RDS_ENDPOINT: ${{ secrets.RDS_ENDPOINT }}
+          RDS_USER: ${{ secrets.RDS_USER }}
+          RDS_PASSWORD: ${{ secrets.RDS_PASSWORD }}
         run: |
-          kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/mysql-secret.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/mysql-deployment.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/mysql-service.yaml -n $EKS_NAMESPACE
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: tienda-backend-config
+            namespace: ${EKS_NAMESPACE}
+          data:
+            DB_HOST: ${RDS_ENDPOINT}
+            DB_NAME: tienda_perritos
+            DB_PORT: "3306"
+          EOF
 
-      # ---------- Actualizar BACKEND en EKS ----------
-      - name: Actualizar BACKEND en EKS
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: tienda-backend-secret
+            namespace: ${EKS_NAMESPACE}
+          type: Opaque
+          stringData:
+            DB_USER: ${RDS_USER}
+            DB_PASSWORD: ${RDS_PASSWORD}
+          EOF
+
+      - name: Renderizar manifests
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          mkdir -p /tmp/tienda-perritos-manifests
+          sed -e "s|__ECR_REGISTRY__|$ECR_REGISTRY|g" -e "s|__IMAGE_TAG__|$IMAGE_TAG|g" k8s/frontend-deployment.yaml > /tmp/tienda-perritos-manifests/frontend-deployment.yaml
+          sed -e "s|__ECR_REGISTRY__|$ECR_REGISTRY|g" -e "s|__IMAGE_TAG__|$IMAGE_TAG|g" k8s/backend-deployment.yaml > /tmp/tienda-perritos-manifests/backend-deployment.yaml
+
+      - name: Aplicar manifests de Kubernetes
+        env:
           EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl apply -f k8s/backend-deployment.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/backend-service.yaml -n $EKS_NAMESPACE
-          kubectl set image deployment/tienda-backend \
-            backend=$ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG} \
-            -n $EKS_NAMESPACE
+          kubectl apply -n $EKS_NAMESPACE -f /tmp/tienda-perritos-manifests/backend-deployment.yaml
+          kubectl apply -n $EKS_NAMESPACE -f k8s/backend-service.yaml
+          kubectl apply -n $EKS_NAMESPACE -f /tmp/tienda-perritos-manifests/frontend-deployment.yaml
+          kubectl apply -n $EKS_NAMESPACE -f k8s/frontend-service.yaml
+          kubectl apply -n $EKS_NAMESPACE -f k8s/backend-hpa.yaml || true
+          kubectl apply -n $EKS_NAMESPACE -f k8s/frontend-hpa.yaml || true
+
+      - name: Validar rollout BACKEND
+        env:
+          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
+        run: |
           kubectl rollout status deployment/tienda-backend -n $EKS_NAMESPACE
-
-      # ---------- Actualizar FRONTEND en EKS ----------
-      - name: Actualizar FRONTEND en EKS
+      - name: Validar rollout FRONTEND
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl apply -f k8s/frontend-deployment.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/frontend-service.yaml -n $EKS_NAMESPACE
-          kubectl set image deployment/tienda-frontend \
-            frontend=$ECR_REGISTRY/${ECR_REPO_FRONTEND}:${IMAGE_TAG} \
-            -n $EKS_NAMESPACE
           kubectl rollout status deployment/tienda-frontend -n $EKS_NAMESPACE
 
-      # ---------- HPA (si existen los YAML) ----------
-      - name: Aplicar HPA (opcional)
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
-        run: |
-          if [ -f k8s/backend-hpa.yaml ]; then kubectl apply -f k8s/backend-hpa.yaml -n $EKS_NAMESPACE; fi
-          if [ -f k8s/frontend-hpa.yaml ]; then kubectl apply -f k8s/frontend-hpa.yaml -n $EKS_NAMESPACE; fi
-
-      # ---------- Ver estado final ----------
       - name: Ver pods y servicios
         env:
           EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}

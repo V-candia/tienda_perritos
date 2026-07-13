@@ -5,13 +5,11 @@ const mysql = require("mysql2/promise");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const {
-  DB_HOST = tienda-db, // acá resuelve internamente en eks
-  DB_USER = "root",
-  DB_PASSWORD = "admin123",
-  DB_NAME = "tienda_perritos",
-  DB_PORT = 3306,
-} = process.env;
+const DB_HOST = process.env.DB_HOST || "tienda-db";
+const DB_USER = process.env.DB_USER || "root";
+const DB_PASSWORD = process.env.DB_PASSWORD || "admin123";
+const DB_NAME = process.env.DB_NAME || "tienda_perritos";
+const DB_PORT = Number(process.env.DB_PORT || 3306);
 
 app.use(cors());
 app.use(express.json());
@@ -20,21 +18,28 @@ let pool;
 
 // Inicializar pool de conexiones
 async function initDb() {
-  try {
-    pool = mysql.createPool({
-      host: DB_HOST,
-      user: DB_USER,
-      password: DB_PASSWORD,
-      database: DB_NAME,
-      port: DB_PORT,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-    });
-    console.log("Pool de conexiones MySQL inicializado.");
-  } catch (err) {
-    console.error("Error al inicializar pool de MySQL:", err);
+  pool = mysql.createPool({
+    host: DB_HOST,
+    user: DB_USER,
+    password: DB_PASSWORD,
+    database: DB_NAME,
+    port: DB_PORT,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+  });
+
+  await pool.query("SELECT 1");
+  console.log("Pool de conexiones MySQL inicializado.");
+}
+
+function ensurePool(res) {
+  if (!pool) {
+    res.status(503).json({ message: "Base de datos no disponible." });
+    return false;
   }
+
+  return true;
 }
 
 // Helper para manejar errores
@@ -45,6 +50,8 @@ function handleError(res, error, message = "Error interno del servidor") {
 
 // Obtener todos los productos
 app.get("/api/productos", async (req, res) => {
+  if (!ensurePool(res)) return;
+
   try {
     const [rows] = await pool.query("SELECT id, nombre, descripcion, precio, stock FROM productos ORDER BY id DESC");
     res.json(rows);
@@ -55,6 +62,8 @@ app.get("/api/productos", async (req, res) => {
 
 // Obtener un producto por ID
 app.get("/api/productos/:id", async (req, res) => {
+  if (!ensurePool(res)) return;
+
   const { id } = req.params;
   try {
     const [rows] = await pool.query("SELECT id, nombre, descripcion, precio, stock FROM productos WHERE id = ?", [id]);
@@ -69,6 +78,8 @@ app.get("/api/productos/:id", async (req, res) => {
 
 // Crear un nuevo producto
 app.post("/api/productos", async (req, res) => {
+  if (!ensurePool(res)) return;
+
   const { nombre, descripcion, precio, stock } = req.body;
 
   if (!nombre || precio == null || stock == null) {
@@ -90,6 +101,8 @@ app.post("/api/productos", async (req, res) => {
 
 // Actualizar un producto
 app.put("/api/productos/:id", async (req, res) => {
+  if (!ensurePool(res)) return;
+
   const { id } = req.params;
   const { nombre, descripcion, precio, stock } = req.body;
 
@@ -116,6 +129,8 @@ app.put("/api/productos/:id", async (req, res) => {
 
 // Eliminar un producto
 app.delete("/api/productos/:id", async (req, res) => {
+  if (!ensurePool(res)) return;
+
   const { id } = req.params;
   try {
     const [result] = await pool.query("DELETE FROM productos WHERE id = ?", [id]);
@@ -137,7 +152,14 @@ app.get("/api/health", (req, res) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, async () => {
-  console.log(`Servidor backend escuchando en puerto ${PORT}`);
+async function start() {
   await initDb();
+  app.listen(PORT, () => {
+    console.log(`Servidor backend escuchando en puerto ${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error("No se pudo iniciar el backend:", err);
+  process.exit(1);
 });

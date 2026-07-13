@@ -15,23 +15,14 @@ spec:
     spec:
       containers:
         - name: backend
-          image: 542768639545.dkr.ecr.us-east-1.amazonaws.com/tienda-backend:eks-v1 # Colocar uri de tu imagen en ECR
+          image: __ECR_REGISTRY__/tienda-perritos-backend:__IMAGE_TAG__
           ports:
             - containerPort: 3001
-          env:
-            - name: DB_HOST
-              value: "tienda-db"
-            - name: DB_USER
-              value: "root"
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: mysql-secret
-                  key: MYSQL_ROOT_PASSWORD
-            - name: DB_NAME
-              value: "tienda_perritos"
-            - name: DB_PORT
-              value: "3306"
+          envFrom:
+            - configMapRef:
+                name: tienda-backend-config
+            - secretRef:
+                name: tienda-backend-secret
 
           # Se agrega Resource para que Metrics Server calcule el % de CPU y Memoria para escalar 
           resources:
