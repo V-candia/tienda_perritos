@@ -7,4 +7,4 @@ data:
   DB_HOST: "tienda-db"
   DB_NAME: "tienda_perritos"
   DB_USER: "root"
-  PORT: "3001"
+  PORT: "5000"
