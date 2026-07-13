@@ -13,7 +13,6 @@ env:
   ECR_REPO_FRONTEND: tienda-perritos-frontend
   ECR_REPO_BACKEND: tienda-perritos-backend
   VERSION_TAG: v1.0.0
-  EKS_NAMESPACE: tienda
 
 jobs:
   build-and-deploy:
