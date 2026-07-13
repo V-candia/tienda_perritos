@@ -10,6 +10,7 @@ permissions:
   id-token: write
 
 env:
+  AWS_REGION: us-east-1
   ECR_REPO_FRONTEND: tienda-perritos-frontend
   ECR_REPO_BACKEND: tienda-perritos-backend
   VERSION_TAG: v1.0.0
@@ -26,7 +27,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: us-east-1
 
       - name: Login a Amazon ECR
         id: login-ecr
@@ -61,7 +62,6 @@ jobs:
       # ---------- Configurar kubeconfig de EKS ----------
       - name: Configurar kubeconfig para EKS
         env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
           EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
         run: |
           aws eks update-kubeconfig \
