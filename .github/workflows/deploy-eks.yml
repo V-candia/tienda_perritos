@@ -7,13 +7,13 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   AWS_REGION: us-east-1
   ECR_REPO_FRONTEND: tienda-perritos-frontend
   ECR_REPO_BACKEND: tienda-perritos-backend
   VERSION_TAG: v1.0.0
+  EKS_NAMESPACE: tienda
 
 jobs:
   build-and-deploy:
@@ -26,7 +26,9 @@ jobs:
       - name: Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: us-east-1
 
       - name: Login a Amazon ECR
@@ -59,7 +61,6 @@ jobs:
         with:
           version: v1.29.0
 
-      # ---------- Configurar kubeconfig de EKS ----------
       - name: Configurar kubeconfig para EKS
         env:
           EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
@@ -74,7 +75,6 @@ jobs:
 
       - name: Preparar configuración de Kubernetes
         env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
           RDS_ENDPOINT: ${{ secrets.RDS_ENDPOINT }}
           RDS_USER: ${{ secrets.RDS_USER }}
           RDS_PASSWORD: ${{ secrets.RDS_PASSWORD }}
@@ -84,7 +84,7 @@ jobs:
           kind: ConfigMap
           metadata:
             name: tienda-backend-config
-            namespace: ${EKS_NAMESPACE}
+            namespace: tienda
           data:
             DB_HOST: ${RDS_ENDPOINT}
             DB_NAME: tienda_perritos
@@ -96,7 +96,7 @@ jobs:
           kind: Secret
           metadata:
             name: tienda-backend-secret
-            namespace: ${EKS_NAMESPACE}
+            namespace: tienda
           type: Opaque
           stringData:
             DB_USER: ${RDS_USER}
@@ -112,31 +112,24 @@ jobs:
           sed -e "s|__ECR_REGISTRY__|$ECR_REGISTRY|g" -e "s|__IMAGE_TAG__|$IMAGE_TAG|g" k8s/backend-deployment.yaml > /tmp/tienda-perritos-manifests/backend-deployment.yaml
 
       - name: Aplicar manifests de Kubernetes
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl apply -n $EKS_NAMESPACE -f /tmp/tienda-perritos-manifests/backend-deployment.yaml
-          kubectl apply -n $EKS_NAMESPACE -f k8s/backend-service.yaml
-          kubectl apply -n $EKS_NAMESPACE -f /tmp/tienda-perritos-manifests/frontend-deployment.yaml
-          kubectl apply -n $EKS_NAMESPACE -f k8s/frontend-service.yaml
-          kubectl apply -n $EKS_NAMESPACE -f k8s/backend-hpa.yaml || true
-          kubectl apply -n $EKS_NAMESPACE -f k8s/frontend-hpa.yaml || true
+          kubectl apply -n tienda -f /tmp/tienda-perritos-manifests/backend-deployment.yaml
+          kubectl apply -n tienda -f k8s/backend-service.yaml
+          kubectl apply -n tienda -f /tmp/tienda-perritos-manifests/frontend-deployment.yaml
+          kubectl apply -n tienda -f k8s/frontend-service.yaml
+          kubectl apply -n tienda -f k8s/backend-hpa.yaml || true
+          kubectl apply -n tienda -f k8s/frontend-hpa.yaml || true
 
       - name: Validar rollout BACKEND
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl rollout status deployment/tienda-backend -n $EKS_NAMESPACE
+          kubectl rollout status deployment/tienda-backend -n tienda
+
       - name: Validar rollout FRONTEND
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl rollout status deployment/tienda-frontend -n $EKS_NAMESPACE
+          kubectl rollout status deployment/tienda-frontend -n tienda
 
       - name: Ver pods y servicios
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl get pods -n $EKS_NAMESPACE
-          kubectl get svc -n $EKS_NAMESPACE
-          kubectl get hpa -n $EKS_NAMESPACE || true
+          kubectl get pods -n tienda
+          kubectl get svc -n tienda
+          kubectl get hpa -n tienda || true
